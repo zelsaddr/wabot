@@ -1,12 +1,16 @@
 {
   "name": "wa-bot",
   "version": "1.0.0",
-  "description": "",
+  "description": "WhatsApp Bot by @zelsaddr",
   "main": "index.js",
   "scripts": {
+    "start": "node index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "author": "",
+  "authors": [
+    "zelsaddr",
+    "astrvon"
+  ],
   "license": "ISC",
   "dependencies": {
     "qrcode-terminal": "^0.12.0",
