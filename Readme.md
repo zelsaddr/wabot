@@ -2,7 +2,7 @@
 
 <img src="/assets/Digital_Stacked_Green.png" width="360">
 
-## WhatsApp Bot by [@zelsaddr](https://github.com/zelsaddr/)
+## WhatsApp Bot by 360
 
 ###### build using JavaScript and 💖
 
