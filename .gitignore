@@ -1,5 +1,5 @@
 node_modules/
-.wwebjs_auth/session/
+localSessionStorage/
 
 package-lock.json
 yarn.lock
