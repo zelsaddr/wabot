@@ -2,7 +2,7 @@
 
 <img src="/assets/Digital_Stacked_Green.png" width="360">
 
-## WhatsApp Bot by [@zelsaddr](https://github.com/zelsaddr/)
+## WhatsApp Bot by 360
 
 ###### build using JavaScript and 💖
 
@@ -11,6 +11,7 @@
 ## Pre-requisites
 
 You must have one of this packages installed:
+
 - node/npm `<^v18>`
 - bun `<^1.x>`
 
@@ -56,6 +57,7 @@ bun main.js
 > You can use `pm2` to run it on background so you don't have to use `&` in the end of command
 >
 > You can run it using:
+>
 > ```bash
 > pm2 start main.js
 > ```
