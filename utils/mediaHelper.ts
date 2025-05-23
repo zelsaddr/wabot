@@ -3,20 +3,106 @@ import fs from "fs";
 import path from "path";
 import { promisify } from "util";
 import { exec as execCallback } from "child_process";
+import ffmpeg from "fluent-ffmpeg";
+import * as mime from "mime-types";
+import sharp from "sharp";
 
 const exec = promisify(execCallback);
 const writeFileAsync = promisify(fs.writeFile);
 const readFileAsync = promisify(fs.readFile);
 const unlinkAsync = promisify(fs.unlink);
 
+// Create media folder if it doesn't exist
+const mediaFolder = path.join(process.cwd(), "media");
+if (!fs.existsSync(mediaFolder)) {
+  fs.mkdirSync(mediaFolder, { recursive: true });
+}
+
+// Set FFmpeg path for Windows
+const ffmpegPath = "C:\\Users\\Izzel\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-7.1.1-full_build\\bin\\ffmpeg.exe";
+const ffprobePath = "C:\\Users\\Izzel\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-7.1.1-full_build\\bin\\ffprobe.exe";
+
+ffmpeg.setFfmpegPath(ffmpegPath);
+ffmpeg.setFfprobePath(ffprobePath);
+
+// Log paths for debugging
+console.log("FFmpeg path:", ffmpegPath);
+console.log("FFprobe path:", ffprobePath);
+
 /**
- * Helper function to process GIFs for better sticker compatibility
+ * Downloads and processes media from a message
+ * @param message The message containing the media
+ * @returns Processed media ready for use
+ */
+export async function downloadMedia(message: any): Promise<MessageMedia> {
+  try {
+    // Download file using message.downloadMedia()
+    const media = await message.downloadMedia();
+    if (!media) throw new Error("Failed to download via WhatsApp API");
+
+    // Get metadata from MessageMedia
+    let mimetype = media.mimetype || "application/octet-stream";
+    let fileExtension = mime.extension(mimetype) || "bin";
+    let fileName = media.filename ? media.filename.replace(/\s+/g, "_") : `media_${Date.now()}.${fileExtension}`;
+
+    // Fix name and extension
+    let originalExt = path.extname(fileName);
+    if (!originalExt || originalExt === ".bin") {
+      fileName = `${fileName.replace(originalExt, "")}.${fileExtension}`;
+    }
+
+    let filePath = path.join(mediaFolder, fileName);
+
+    // Save file in Base64
+    await writeFileAsync(filePath, Buffer.from(media.data, "base64"));
+
+    // For video files, try to convert to a supported format first
+    if (mimetype.includes("video")) {
+      try {
+        const tempPath = path.join(mediaFolder, `temp_${Date.now()}.mp4`);
+        await new Promise((resolve, reject) => {
+          ffmpeg(filePath)
+            .outputOptions("-c:v libx264") // Use H.264 codec
+            .outputOptions("-c:a aac") // Use AAC audio codec
+            .outputOptions("-preset ultrafast")
+            .outputOptions("-movflags +faststart")
+            .outputOptions("-vf scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=#00000000")
+            .outputOptions("-b:v 1M") // Set video bitrate to 1Mbps
+            .outputOptions("-maxrate 1M") // Maximum bitrate
+            .outputOptions("-bufsize 2M") // Buffer size
+            .output(tempPath)
+            .on("end", resolve)
+            .on("error", reject)
+            .run();
+        });
+
+        // Replace original file with converted one
+        await unlinkAsync(filePath);
+        await fs.promises.rename(tempPath, filePath);
+
+        // Update media data with converted file
+        const convertedBuffer = await readFileAsync(filePath);
+        media.data = convertedBuffer.toString("base64");
+        media.mimetype = "video/mp4";
+      } catch (conversionError) {
+        console.warn("Video conversion failed:", conversionError);
+        // Continue with original file if conversion fails
+      }
+    }
+
+    return media;
+  } catch (error) {
+    console.error("Error downloading media:", error);
+    throw error;
+  }
+}
+
+/**
+ * Helper function to process media (video/GIF) for sticker creation
  * @param media The message media to process
  * @returns Processed media ready for sticker creation
  */
-export async function processGifForSticker(
-  media: MessageMedia
-): Promise<MessageMedia> {
+export async function processMediaForSticker(media: MessageMedia): Promise<MessageMedia> {
   try {
     const tempDir = path.join(process.cwd(), "temp");
     if (!fs.existsSync(tempDir)) {
@@ -24,39 +110,175 @@ export async function processGifForSticker(
     }
 
     const timestamp = Date.now();
-    const inputFile = path.join(tempDir, `input_${timestamp}.gif`);
+    // Determine correct file extension based on MIME type
+    const isVideo = media.mimetype.includes("video");
+    const isGif = media.mimetype.includes("gif");
+    const fileExt = isVideo ? "mp4" : isGif ? "gif" : "mp4";
+
+    const inputFile = path.join(tempDir, `input_${timestamp}.${fileExt}`);
+    const framesDir = path.join(tempDir, `frames_${timestamp}`);
     const outputFile = path.join(tempDir, `output_${timestamp}.webp`);
+
+    // Create frames directory
+    if (!fs.existsSync(framesDir)) {
+      fs.mkdirSync(framesDir);
+    }
 
     const buffer = Buffer.from(media.data, "base64");
     await writeFileAsync(inputFile, buffer);
 
     try {
-      await exec(
-        `ffmpeg -i ${inputFile} -vf "scale=512:512:force_original_aspect_ratio=decrease,format=rgba,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=#00000000" -lossless 1 -loop 0 -preset default -an -vsync 0 ${outputFile}`
-      );
+      // Get media information
+      const mediaInfo = await new Promise<any>((resolve, reject) => {
+        ffmpeg.ffprobe(inputFile, (err, metadata) => {
+          if (err) reject(err);
+          else resolve(metadata);
+        });
+      });
+
+      // Calculate frame rate and duration
+      let fps = 30; // Default FPS
+      let duration = 0;
+
+      if (mediaInfo.streams && mediaInfo.streams[0]) {
+        const stream = mediaInfo.streams[0];
+        if (stream.r_frame_rate) {
+          const [num, den] = stream.r_frame_rate.split("/").map(Number);
+          fps = num / den;
+        }
+        duration = mediaInfo.format.duration || 0;
+      }
+
+      // Limit frames based on duration and WhatsApp's limits
+      const frameCount = Math.min(Math.ceil(duration * fps), 30); // WhatsApp's limit is 30 frames
+      console.log(`Processing ${frameCount} frames at ${fps} FPS`);
+
+      // Extract frames from media
+      await new Promise((resolve, reject) => {
+        ffmpeg(inputFile)
+          .outputOptions(`-vf fps=${fps},scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=#00000000`)
+          .outputOptions(`-frames:v ${frameCount}`)
+          .output(path.join(framesDir, "frame_%d.png"))
+          .on("end", resolve)
+          .on("error", reject)
+          .run();
+      });
+
+      // Get all frame files
+      const frameFiles = fs
+        .readdirSync(framesDir)
+        .filter((file) => file.startsWith("frame_") && file.endsWith(".png"))
+        .sort((a, b) => {
+          const numA = parseInt(a.replace("frame_", "").replace(".png", ""));
+          const numB = parseInt(b.replace("frame_", "").replace(".png", ""));
+          return numA - numB;
+        });
+
+      console.log(`Found ${frameFiles.length} frames to process`);
+
+      // Create animated WebP using FFmpeg
+      console.log("Creating animated WebP...");
+      await new Promise((resolve, reject) => {
+        ffmpeg()
+          .input(path.join(framesDir, "frame_%d.png"))
+          .inputOptions("-framerate " + fps)
+          .outputOptions("-vcodec libwebp")
+          .outputOptions("-lossless 0")
+          .outputOptions("-compression_level 6")
+          .outputOptions("-q:v 50")
+          .outputOptions("-loop 0")
+          .outputOptions("-preset picture")
+          .outputOptions("-an")
+          .outputOptions("-vsync 0")
+          .outputOptions("-s 512:512")
+          .output(outputFile)
+          .on("end", resolve)
+          .on("error", reject)
+          .run();
+      });
+
+      // Check if output file exists and has content
+      if (!fs.existsSync(outputFile)) {
+        throw new Error("WebP output file was not created");
+      }
+
+      const fileStats = fs.statSync(outputFile);
+      if (fileStats.size === 0) {
+        throw new Error("WebP output file is empty");
+      }
+
+      console.log(`Created WebP sticker: ${fileStats.size} bytes`);
 
       const processedBuffer = await readFileAsync(outputFile);
-      const processedMedia = new MessageMedia(
-        "image/webp",
-        processedBuffer.toString("base64"),
-        "sticker.webp"
-      );
+      const processedMedia = new MessageMedia("image/webp", processedBuffer.toString("base64"), "sticker.webp");
 
-      await unlinkAsync(inputFile);
-      await unlinkAsync(outputFile);
+      // Cleanup temporary files
+      try {
+        // Delete all frame files first
+        const files = fs.readdirSync(framesDir);
+        await Promise.all(
+          files.map((file) => {
+            const filePath = path.join(framesDir, file);
+            if (fs.existsSync(filePath)) {
+              return unlinkAsync(filePath);
+            }
+          })
+        );
+
+        // Then remove the frames directory
+        if (fs.existsSync(framesDir)) {
+          fs.rmdirSync(framesDir);
+        }
+
+        // Delete input file if it exists
+        if (fs.existsSync(inputFile)) {
+          await unlinkAsync(inputFile);
+        }
+
+        // Delete output file if it exists
+        if (fs.existsSync(outputFile)) {
+          await unlinkAsync(outputFile);
+        }
+      } catch (cleanupError) {
+        console.warn("Warning: Failed to cleanup some temporary files:", cleanupError);
+      }
 
       return processedMedia;
     } catch (error) {
-      console.log(
-        "FFmpeg processing failed, falling back to original media:",
-        error
-      );
+      console.log("Media processing failed:", error);
 
-      await unlinkAsync(inputFile);
+      // Cleanup on error
+      try {
+        // Delete all frame files first
+        if (fs.existsSync(framesDir)) {
+          const files = fs.readdirSync(framesDir);
+          await Promise.all(
+            files.map((file) => {
+              const filePath = path.join(framesDir, file);
+              if (fs.existsSync(filePath)) {
+                return unlinkAsync(filePath);
+              }
+            })
+          );
+          fs.rmdirSync(framesDir);
+        }
+
+        // Delete input file if it exists
+        if (fs.existsSync(inputFile)) {
+          await unlinkAsync(inputFile);
+        }
+
+        // Delete output file if it exists
+        if (fs.existsSync(outputFile)) {
+          await unlinkAsync(outputFile);
+        }
+      } catch (cleanupError) {
+        console.warn("Warning: Failed to cleanup temporary files:", cleanupError);
+      }
       return media;
     }
   } catch (error) {
-    console.error("Error processing GIF:", error);
+    console.error("Error processing media:", error);
     return media;
   }
 }
