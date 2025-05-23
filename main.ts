@@ -55,7 +55,7 @@ const client = new Client({
     dataPath: "localSessionStorage",
   }),
   puppeteer: {
-    headless: false,
+    headless: true,
     executablePath: "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
     args: ["--no-sandbox", "--disable-setuid-sandbox"],
     defaultViewport: {
@@ -116,6 +116,100 @@ client.on("message", async (message: Message) => {
     "message"
   );
 
+  // Handle !everyone command
+  if (message.body.startsWith("!everyone")) {
+    try {
+      // Check if the message is from a group
+      const chat = await message.getChat();
+      if (!chat.isGroup) {
+        await message.reply("*[❌]* Perintah ini hanya bisa digunakan di grup!");
+        return;
+      }
+
+      // Check if sender is admin
+      const senderId = message.author || message.from;
+      let isAdmin = false;
+      for (const participant of (chat as any).participants) {
+        if (participant.id._serialized === senderId && participant.isAdmin) {
+          isAdmin = true;
+          break;
+        }
+      }
+
+      if (!isAdmin) {
+        await message.reply("*[❌]* Hanya admin grup yang bisa menggunakan perintah ini!");
+        return;
+      }
+
+      // Get custom message if provided
+      const customMessage = message.body.slice("!everyone".length).trim();
+      const templates = {
+        default: "📢 *Perhatian semua!*",
+        rapat: "📅 *Pengingat Rapat*\nMohon untuk bergabung dalam rapat!",
+        pengumuman: "📢 *Pengumuman Penting*\nMohon dibaca dengan seksama!",
+        acara: "🎉 *Acara Mendatang*\nJangan lupa untuk bergabung!",
+        pengingat: "⏰ *Pengingat*\nMohon untuk diperhatikan!",
+        darurat: "🚨 *Pesan Penting*\nMembutuhkan perhatian segera!",
+        tugas: "📝 *Pembagian Tugas*\nMohon untuk menyelesaikan tugas masing-masing!",
+        libur: "🏖️ *Pengumuman Libur*\nInformasi jadwal libur!",
+        meeting: "👥 *Meeting Online*\nJadwal meeting online!",
+        deadline: "⏳ *Deadline Tugas*\nBatas waktu pengumpulan tugas!",
+      };
+
+      // Get all participants and create mentions
+      const participantData: { id: string; name: string; mention: string }[] = [];
+
+      for (const participant of (chat as any).participants) {
+        try {
+          const contact = await client.getContactById(participant.id._serialized);
+          participantData.push({
+            id: participant.id._serialized,
+            name: contact.name || contact.pushname || participant.id.user,
+            mention: `@${participant.id.user}`,
+          });
+        } catch (err) {
+          debugLog(`Error getting contact for ${participant.id.user}`, { error: err }, "error", "contact");
+        }
+      }
+
+      // Sort participants by name
+      participantData.sort((a, b) => a.name.localeCompare(b.name));
+
+      // Create final text and mentions array
+      const mentions = participantData.map((p) => p.id);
+      const mentionText = participantData.map((p) => p.mention).join(" ");
+
+      // Prepare the message
+      let messageText = "";
+      if (customMessage) {
+        // Check if it's a template
+        const templateKey = customMessage.toLowerCase();
+        if (templates[templateKey as keyof typeof templates]) {
+          messageText = `${templates[templateKey as keyof typeof templates]}\n\n${mentionText}`;
+        } else {
+          // If it's a custom message, add a nice header
+          messageText = `📢 *Pengumuman*\n${customMessage}\n\n${mentionText}`;
+        }
+      } else {
+        messageText = `${templates.default}\n\n${mentionText}`;
+      }
+
+      // Send message with mentions
+      await chat.sendMessage(messageText, { mentions });
+    } catch (error) {
+      debugLog(
+        "Error in !everyone command",
+        {
+          error: error.message,
+          stack: error.stack,
+        },
+        "error",
+        "everyone"
+      );
+      await message.reply("*[❎]* Gagal untuk mention semua orang. Silakan coba lagi nanti.");
+    }
+  }
+
   if ((message.type === MessageTypes.IMAGE || message.type === MessageTypes.VIDEO) && message.body === ".sticker" && !message.hasQuotedMsg) {
     try {
       debugLog(
@@ -123,6 +217,10 @@ client.on("message", async (message: Message) => {
         {
           mediaType: message.type,
           from: message.from,
+          recipient: message.from,
+          chatId: message.from,
+          isGroup: message.from.includes("g.us"),
+          timestamp: new Date().toISOString(),
         },
         "media",
         "message"
@@ -165,8 +263,31 @@ client.on("message", async (message: Message) => {
       await message
         .reply(processedMedia, message.from, stickerOptions)
         .then(async () => {
-          debugLog("Sticker created and sent successfully", null, "success", "sticker");
+          debugLog(
+            "Sticker created and sent successfully",
+            {
+              recipient: message.from,
+              chatId: message.from,
+              isGroup: message.from.includes("g.us"),
+              timestamp: new Date().toISOString(),
+            },
+            "success",
+            "sticker"
+          );
           await message.react("✅");
+
+          // Cleanup all temporary files
+          try {
+            if ((processedMedia as any).cleanup) {
+              await (processedMedia as any).cleanup();
+            }
+            if ((media as any).cleanup) {
+              await (media as any).cleanup();
+            }
+            debugLog("Temporary files cleaned up successfully", null, "success", "cleanup");
+          } catch (cleanupError) {
+            debugLog("Failed to cleanup temporary files", { error: cleanupError }, "error", "cleanup");
+          }
         })
         .catch(async (err) => {
           debugLog(
@@ -180,6 +301,19 @@ client.on("message", async (message: Message) => {
           );
           await message.react("❌");
           await message.reply(`*[❎]* Failed to create sticker. Error: ${err.message}`);
+
+          // Cleanup temporary files even on error
+          try {
+            if ((processedMedia as any).cleanup) {
+              await (processedMedia as any).cleanup();
+            }
+            if ((media as any).cleanup) {
+              await (media as any).cleanup();
+            }
+            debugLog("Temporary files cleaned up after error", null, "success", "cleanup");
+          } catch (cleanupError) {
+            debugLog("Failed to cleanup temporary files after error", { error: cleanupError }, "error", "cleanup");
+          }
         });
     } catch (err) {
       debugLog(
@@ -203,9 +337,13 @@ client.on("message", async (ms: Message) => {
         "Processing sticker from quoted message",
         {
           from: ms.from,
+          recipient: ms.from,
+          chatId: ms.from,
+          isGroup: ms.from.includes("g.us"),
           quotedMsgId: ms.id,
           messageType: ms.type,
           hasQuotedMsg: ms.hasQuotedMsg,
+          timestamp: new Date().toISOString(),
         },
         "media",
         "quotedMessage"
@@ -278,8 +416,31 @@ client.on("message", async (ms: Message) => {
       await ms
         .reply(processedMedia, ms.from, stickerOptions)
         .then(async () => {
-          debugLog("Quoted sticker created and sent successfully", null, "success", "quotedSticker");
+          debugLog(
+            "Quoted sticker created and sent successfully",
+            {
+              recipient: ms.from,
+              chatId: ms.from,
+              isGroup: ms.from.includes("g.us"),
+              timestamp: new Date().toISOString(),
+            },
+            "success",
+            "quotedSticker"
+          );
           await ms.react("✅");
+
+          // Cleanup all temporary files
+          try {
+            if ((processedMedia as any).cleanup) {
+              await (processedMedia as any).cleanup();
+            }
+            if ((media as any).cleanup) {
+              await (media as any).cleanup();
+            }
+            debugLog("Temporary files cleaned up successfully", null, "success", "cleanup");
+          } catch (cleanupError) {
+            debugLog("Failed to cleanup temporary files", { error: cleanupError }, "error", "cleanup");
+          }
         })
         .catch(async (err) => {
           debugLog(
@@ -297,6 +458,19 @@ client.on("message", async (ms: Message) => {
           );
           await ms.react("❌");
           await ms.reply(`*[❎]* Failed to create sticker. Error: ${err.message}`);
+
+          // Cleanup temporary files even on error
+          try {
+            if ((processedMedia as any).cleanup) {
+              await (processedMedia as any).cleanup();
+            }
+            if ((media as any).cleanup) {
+              await (media as any).cleanup();
+            }
+            debugLog("Temporary files cleaned up after error", null, "success", "cleanup");
+          } catch (cleanupError) {
+            debugLog("Failed to cleanup temporary files after error", { error: cleanupError }, "error", "cleanup");
+          }
         });
     } catch (err) {
       debugLog(

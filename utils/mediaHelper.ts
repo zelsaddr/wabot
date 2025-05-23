@@ -51,7 +51,13 @@ export async function downloadMedia(message: any): Promise<MessageMedia> {
       fileName = `${fileName.replace(originalExt, "")}.${fileExtension}`;
     }
 
-    let filePath = path.join(mediaFolder, fileName);
+    // Use temp directory for media files
+    const tempDir = path.join(process.cwd(), "temp");
+    if (!fs.existsSync(tempDir)) {
+      fs.mkdirSync(tempDir, { recursive: true });
+    }
+
+    let filePath = path.join(tempDir, fileName);
 
     // Save file in Base64
     await writeFileAsync(filePath, Buffer.from(media.data, "base64"));
@@ -59,7 +65,7 @@ export async function downloadMedia(message: any): Promise<MessageMedia> {
     // For video files, try to convert to a supported format first
     if (mimetype.includes("video")) {
       try {
-        const tempPath = path.join(mediaFolder, `temp_${Date.now()}.mp4`);
+        const tempPath = path.join(tempDir, `temp_${Date.now()}.mp4`);
         await new Promise((resolve, reject) => {
           ffmpeg(filePath)
             .outputOptions("-c:v libx264") // Use H.264 codec
@@ -89,6 +95,17 @@ export async function downloadMedia(message: any): Promise<MessageMedia> {
         // Continue with original file if conversion fails
       }
     }
+
+    // Add cleanup function to media object
+    (media as any).cleanup = async () => {
+      try {
+        if (fs.existsSync(filePath)) {
+          await unlinkAsync(filePath);
+        }
+      } catch (error) {
+        console.warn("Failed to cleanup media file:", error);
+      }
+    };
 
     return media;
   } catch (error) {
@@ -149,14 +166,21 @@ export async function processMediaForSticker(media: MessageMedia): Promise<Messa
         duration = mediaInfo.format.duration || 0;
       }
 
-      // Limit frames based on duration and WhatsApp's limits
-      const frameCount = Math.min(Math.ceil(duration * fps), 30); // WhatsApp's limit is 30 frames
-      console.log(`Processing ${frameCount} frames at ${fps} FPS`);
+      console.log(`Original media: ${duration.toFixed(2)}s at ${fps.toFixed(2)} FPS`);
+
+      // Calculate total frames based on original duration and FPS
+      const totalFrames = Math.ceil(duration * fps);
+      // Limit frames based on WhatsApp's limits (30 frames)
+      const frameCount = Math.min(totalFrames, 30);
+
+      // Calculate new FPS to maintain duration with limited frames
+      const newFps = frameCount / duration;
+      console.log(`Processing ${frameCount} frames at ${newFps.toFixed(2)} FPS to maintain ${duration.toFixed(2)}s duration`);
 
       // Extract frames from media
       await new Promise((resolve, reject) => {
         ffmpeg(inputFile)
-          .outputOptions(`-vf fps=${fps},scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=#00000000`)
+          .outputOptions(`-vf fps=${newFps},scale=512:512:force_original_aspect_ratio=decrease,pad=512:512:(ow-iw)/2:(oh-ih)/2:color=#00000000`)
           .outputOptions(`-frames:v ${frameCount}`)
           .output(path.join(framesDir, "frame_%d.png"))
           .on("end", resolve)
@@ -181,7 +205,7 @@ export async function processMediaForSticker(media: MessageMedia): Promise<Messa
       await new Promise((resolve, reject) => {
         ffmpeg()
           .input(path.join(framesDir, "frame_%d.png"))
-          .inputOptions("-framerate " + fps)
+          .inputOptions("-framerate " + newFps)
           .outputOptions("-vcodec libwebp")
           .outputOptions("-lossless 0")
           .outputOptions("-compression_level 6")
@@ -191,6 +215,8 @@ export async function processMediaForSticker(media: MessageMedia): Promise<Messa
           .outputOptions("-an")
           .outputOptions("-vsync 0")
           .outputOptions("-s 512:512")
+          .outputOptions("-frame_duration " + 1000 / newFps) // Set frame duration in milliseconds
+          .outputOptions("-filter_complex setpts=PTS-STARTPTS") // Reset timestamps
           .output(outputFile)
           .on("end", resolve)
           .on("error", reject)
@@ -212,36 +238,21 @@ export async function processMediaForSticker(media: MessageMedia): Promise<Messa
       const processedBuffer = await readFileAsync(outputFile);
       const processedMedia = new MessageMedia("image/webp", processedBuffer.toString("base64"), "sticker.webp");
 
-      // Cleanup temporary files
-      try {
-        // Delete all frame files first
-        const files = fs.readdirSync(framesDir);
-        await Promise.all(
-          files.map((file) => {
-            const filePath = path.join(framesDir, file);
-            if (fs.existsSync(filePath)) {
-              return unlinkAsync(filePath);
-            }
-          })
-        );
-
-        // Then remove the frames directory
-        if (fs.existsSync(framesDir)) {
-          fs.rmdirSync(framesDir);
+      // Add cleanup function to processed media
+      (processedMedia as any).cleanup = async () => {
+        try {
+          // Cleanup all temporary files
+          if (fs.existsSync(inputFile)) await unlinkAsync(inputFile);
+          if (fs.existsSync(outputFile)) await unlinkAsync(outputFile);
+          if (fs.existsSync(framesDir)) {
+            const files = fs.readdirSync(framesDir);
+            await Promise.all(files.map((file) => unlinkAsync(path.join(framesDir, file))));
+            fs.rmdirSync(framesDir);
+          }
+        } catch (error) {
+          console.warn("Failed to cleanup sticker files:", error);
         }
-
-        // Delete input file if it exists
-        if (fs.existsSync(inputFile)) {
-          await unlinkAsync(inputFile);
-        }
-
-        // Delete output file if it exists
-        if (fs.existsSync(outputFile)) {
-          await unlinkAsync(outputFile);
-        }
-      } catch (cleanupError) {
-        console.warn("Warning: Failed to cleanup some temporary files:", cleanupError);
-      }
+      };
 
       return processedMedia;
     } catch (error) {
@@ -249,31 +260,15 @@ export async function processMediaForSticker(media: MessageMedia): Promise<Messa
 
       // Cleanup on error
       try {
-        // Delete all frame files first
+        if (fs.existsSync(inputFile)) await unlinkAsync(inputFile);
+        if (fs.existsSync(outputFile)) await unlinkAsync(outputFile);
         if (fs.existsSync(framesDir)) {
           const files = fs.readdirSync(framesDir);
-          await Promise.all(
-            files.map((file) => {
-              const filePath = path.join(framesDir, file);
-              if (fs.existsSync(filePath)) {
-                return unlinkAsync(filePath);
-              }
-            })
-          );
+          await Promise.all(files.map((file) => unlinkAsync(path.join(framesDir, file))));
           fs.rmdirSync(framesDir);
         }
-
-        // Delete input file if it exists
-        if (fs.existsSync(inputFile)) {
-          await unlinkAsync(inputFile);
-        }
-
-        // Delete output file if it exists
-        if (fs.existsSync(outputFile)) {
-          await unlinkAsync(outputFile);
-        }
       } catch (cleanupError) {
-        console.warn("Warning: Failed to cleanup temporary files:", cleanupError);
+        console.warn("Failed to cleanup files:", cleanupError);
       }
       return media;
     }
