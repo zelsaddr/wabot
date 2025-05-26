@@ -3,6 +3,7 @@ import { Client, LocalAuth, type Message, type Chat, type Contact, MessageTypes 
 import config from "./config/config.json";
 import { processMediaForSticker, downloadMedia } from "./utils/mediaHelper";
 import chalk from "chalk";
+import * as roleManager from "./utils/roleManager";
 
 // Debug logging function with colors and variable names
 const debugLog = (message: string, data?: any, type: "info" | "success" | "error" | "warning" | "media" = "info", varName?: string) => {
@@ -207,6 +208,241 @@ client.on("message", async (message: Message) => {
         "everyone"
       );
       await message.reply("*[❎]* Gagal untuk mention semua orang. Silakan coba lagi nanti.");
+    }
+  }
+
+  // Role Management Commands
+  if (message.body.startsWith("!role")) {
+    try {
+      const chat = await message.getChat();
+      if (!chat.isGroup) {
+        await message.reply("*[❌]* Perintah ini hanya bisa digunakan di grup!");
+        return;
+      }
+
+      const senderId = message.author || message.from;
+      let isAdmin = false;
+      for (const participant of (chat as any).participants) {
+        if (participant.id._serialized === senderId && participant.isAdmin) {
+          isAdmin = true;
+          break;
+        }
+      }
+
+      if (!isAdmin) {
+        await message.reply("*[❌]* Hanya admin grup yang bisa menggunakan perintah ini!");
+        return;
+      }
+
+      const groupId = chat.id._serialized.toString();
+      const args = message.body.slice("!role".length).trim().split(" ");
+      const command = args[0]?.toLowerCase();
+
+      switch (command) {
+        case "create":
+          if (args.length < 2) {
+            await message.reply("*[❌]* Format: !role create <nama_role>");
+            return;
+          }
+          const roleName = args[1];
+          if (roleManager.createRole(groupId, roleName)) {
+            await message.reply(`*[✅]* Role "${roleName}" berhasil dibuat!`);
+          } else {
+            await message.reply(`*[❌]* Role "${roleName}" sudah ada!`);
+          }
+          break;
+
+        case "delete":
+          if (args.length < 2) {
+            await message.reply("*[❌]* Format: !role delete <nama_role>");
+            return;
+          }
+          if (roleManager.deleteRole(groupId, args[1])) {
+            await message.reply(`*[✅]* Role "${args[1]}" berhasil dihapus!`);
+          } else {
+            await message.reply(`*[❌]* Role "${args[1]}" tidak ditemukan!`);
+          }
+          break;
+
+        case "add":
+          if (args.length < 3) {
+            await message.reply("*[❌]* Format: !role add <nama_role> @user");
+            return;
+          }
+          const mentionedUsers = message.mentionedIds.map((id) => id.toString());
+          if (mentionedUsers.length === 0) {
+            await message.reply("*[❌]* Tag user yang ingin ditambahkan ke role!");
+            return;
+          }
+          for (const userId of mentionedUsers) {
+            try {
+              const contact = await client.getContactById(userId);
+              if (roleManager.addMemberToRole(groupId, args[1], userId, contact.name || "", contact.pushname || "")) {
+                await message.reply(`*[✅]* User berhasil ditambahkan ke role "${args[1]}"!`);
+              } else {
+                await message.reply(`*[❌]* Role "${args[1]}" tidak ditemukan!`);
+              }
+            } catch (err) {
+              await message.reply(`*[❌]* Gagal mendapatkan informasi user!`);
+            }
+          }
+          break;
+
+        case "remove":
+          if (args.length < 3) {
+            await message.reply("*[❌]* Format: !role remove <nama_role> @user");
+            return;
+          }
+          const mentionedUsers2 = message.mentionedIds.map((id) => id.toString());
+          if (mentionedUsers2.length === 0) {
+            await message.reply("*[❌]* Tag user yang ingin dihapus dari role!");
+            return;
+          }
+          for (const userId of mentionedUsers2) {
+            if (roleManager.removeMemberFromRole(groupId, args[1], userId)) {
+              await message.reply(`*[✅]* User berhasil dihapus dari role "${args[1]}"!`);
+            } else {
+              await message.reply(`*[❌]* Role "${args[1]}" tidak ditemukan!`);
+            }
+          }
+          break;
+
+        case "list":
+          const roles = roleManager.getGroupRoles(groupId);
+          if (roles.length === 0) {
+            await message.reply("*[ℹ️]* Belum ada role yang dibuat di grup ini!");
+            return;
+          }
+          let roleList = "*[📋]* Daftar Role:\n\n";
+          for (const role of roles) {
+            const memberCount = role.members.length;
+            roleList += `*${role.name}* (${memberCount} member)\n`;
+          }
+          await message.reply(roleList);
+          break;
+
+        case "members":
+          if (args.length < 2) {
+            await message.reply("*[❌]* Format: !role members <nama_role>");
+            return;
+          }
+          const members = roleManager.getRoleMembers(groupId, args[1]);
+          if (members.length === 0) {
+            await message.reply(`*[ℹ️]* Tidak ada member dalam role "${args[1]}"!`);
+            return;
+          }
+          let memberList = `*[👥]* Members dengan role "${args[1]}":\n\n`;
+          for (const member of members) {
+            memberList += `• @${member.name || member.pushname || member.id}\n`;
+          }
+          await message.reply(memberList);
+          break;
+
+        default:
+          await message.reply(
+            "*[ℹ️]* Perintah Role Management:\n\n" +
+              "• !role create <nama_role> - Buat role baru\n" +
+              "• !role delete <nama_role> - Hapus role\n" +
+              "• !role add <nama_role> @user - Tambah user ke role\n" +
+              "• !role remove <nama_role> @user - Hapus user dari role\n" +
+              "• !role list - Lihat daftar role\n" +
+              "• !role members <nama_role> - Lihat member dalam role"
+          );
+      }
+    } catch (error) {
+      debugLog(
+        "Error in role management",
+        {
+          error: error.message,
+          stack: error.stack,
+        },
+        "error",
+        "role"
+      );
+      await message.reply("*[❎]* Terjadi kesalahan. Silakan coba lagi nanti.");
+    }
+  }
+
+  // Role Mention
+  if (message.body.includes("@")) {
+    try {
+      const chat = await message.getChat();
+      if (!chat.isGroup) return;
+
+      const groupId = chat.id._serialized.toString();
+      const roles = roleManager.getGroupRoles(groupId);
+      if (roles.length === 0) return;
+
+      let messageText = message.body;
+      const mentionedRoles: { name: string; members: { id: string; name: string; pushname: string }[] }[] = [];
+
+      // Check for role mentions
+      for (const role of roles) {
+        const roleMention = `@${role.name}`;
+        if (messageText.includes(roleMention)) {
+          const roleMembers = roleManager.getRoleMembers(groupId, role.name);
+          if (roleMembers.length > 0) {
+            mentionedRoles.push({ name: role.name, members: roleMembers });
+          }
+        }
+      }
+
+      if (mentionedRoles.length > 0) {
+        // Check for custom message pattern: @role message
+        let customPatternMatch: RegExpMatchArray | null = null;
+        if (mentionedRoles.length === 1) {
+          const role = mentionedRoles[0];
+          const regex = new RegExp(`^@${role.name}\\s+(.+)`, "i");
+          customPatternMatch = message.body.match(regex);
+        }
+
+        let formattedMessage = messageText;
+        const mentions: string[] = [];
+        const memberData: { id: string; name: string; mention: string }[] = [];
+
+        for (const role of mentionedRoles) {
+          formattedMessage = formattedMessage.replace(`@${role.name}`, `*[${role.name.toUpperCase()}]*`);
+          for (const member of role.members) {
+            try {
+              const contact = await client.getContactById(member.id);
+              const memberName = contact.name || contact.pushname || member.name || member.pushname || member.id;
+              memberData.push({
+                id: member.id,
+                name: memberName,
+                mention: `@${member.id.split("@")[0]}`,
+              });
+            } catch (err) {
+              debugLog(`Error getting contact for ${member.id}`, { error: err }, "error", "contact");
+              memberData.push({
+                id: member.id,
+                name: member.name || member.pushname || member.id,
+                mention: `@${member.id.split("@")[0]}`,
+              });
+            }
+          }
+        }
+
+        memberData.sort((a, b) => a.name.localeCompare(b.name));
+        mentions.push(...memberData.map((m) => m.id));
+        const mentionText = memberData.map((m) => m.mention).join(" ");
+
+        // If matches custom pattern, use that format
+        if (customPatternMatch) {
+          formattedMessage = `*[${mentionedRoles[0].name.toUpperCase()}]* ${customPatternMatch[1]}`;
+        }
+
+        await chat.sendMessage(formattedMessage + (mentionText ? "\n" + mentionText : ""), { mentions });
+      }
+    } catch (error) {
+      debugLog(
+        "Error in role mention",
+        {
+          error: error.message,
+          stack: error.stack,
+        },
+        "error",
+        "roleMention"
+      );
     }
   }
 
