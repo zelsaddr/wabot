@@ -363,76 +363,98 @@ client.on("message", async (message: Message) => {
     }
   }
 
+  // --- Role Mention Handler ---
+  async function handleRoleMention(message: Message, client: Client) {
+    const chat = await message.getChat();
+    if (!chat.isGroup) return;
+
+    const groupId = chat.id._serialized.toString();
+    const roles = roleManager.getGroupRoles(groupId);
+    if (roles.length === 0) return;
+
+    // Find mentioned roles in the message
+    const mentionedRoles = roles
+      .filter((role) => message.body.includes(`@${role.name}`))
+      .map((role) => ({
+        name: role.name,
+        members: roleManager.getRoleMembers(groupId, role.name),
+      }))
+      .filter((role) => role.members.length > 0);
+
+    if (mentionedRoles.length === 0) return;
+
+    // Helper: Fetch and format member data
+    async function getMemberData(members: { id: string; name: string; pushname: string }[]) {
+      const memberData: { id: string; name: string; mention: string }[] = [];
+      for (const member of members) {
+        try {
+          const contact = await client.getContactById(member.id);
+          const memberName = contact.name || contact.pushname || member.name || member.pushname || member.id;
+          memberData.push({
+            id: member.id,
+            name: memberName,
+            mention: `@${member.id.split("@")[0]}`,
+          });
+        } catch (err) {
+          debugLog(`Error getting contact for ${member.id}`, { error: err }, "error", "contact");
+          memberData.push({
+            id: member.id,
+            name: member.name || member.pushname || member.id,
+            mention: `@${member.id.split("@")[0]}`,
+          });
+        }
+      }
+      // Sort by name
+      memberData.sort((a, b) => a.name.localeCompare(b.name));
+      return memberData;
+    }
+
+    // Helper: Detect custom message pattern
+    function getCustomPattern(roleName: string, body: string): string | null {
+      const regex = new RegExp(`^@${roleName}\\s+(.+)`, "i");
+      const match = body.match(regex);
+      return match ? match[1] : null;
+    }
+
+    // Helper: Format the final message
+    function formatRoleMention(roleName: string, customText: string | null, originalText: string) {
+      if (customText) {
+        return `*[${roleName.toUpperCase()}]* ${customText}`;
+      }
+      // Replace all @role with uppercase
+      return originalText.replace(`@${roleName}`, `*[${roleName.toUpperCase()}]*`);
+    }
+
+    // Aggregate all members from mentioned roles
+    let allMemberData: { id: string; name: string; mention: string }[] = [];
+    for (const role of mentionedRoles) {
+      const memberData = await getMemberData(role.members);
+      allMemberData = allMemberData.concat(memberData);
+    }
+    // Remove duplicates by id
+    const uniqueMemberData = Array.from(new Map(allMemberData.map((m) => [m.id, m])).values());
+    const mentions = uniqueMemberData.map((m) => m.id);
+    const mentionText = uniqueMemberData.map((m) => m.mention).join(" ");
+
+    // If only one role is mentioned and custom pattern is matched, use custom format
+    let formattedMessage = message.body;
+    if (mentionedRoles.length === 1) {
+      const customText = getCustomPattern(mentionedRoles[0].name, message.body);
+      formattedMessage = formatRoleMention(mentionedRoles[0].name, customText, message.body);
+    } else {
+      // Replace all mentioned roles with uppercase
+      for (const role of mentionedRoles) {
+        formattedMessage = formattedMessage.replace(`@${role.name}`, `*[${role.name.toUpperCase()}]*`);
+      }
+    }
+
+    await chat.sendMessage(formattedMessage + (mentionText ? "\n" + mentionText : ""), { mentions });
+  }
+
   // Role Mention
   if (message.body.includes("@")) {
     try {
-      const chat = await message.getChat();
-      if (!chat.isGroup) return;
-
-      const groupId = chat.id._serialized.toString();
-      const roles = roleManager.getGroupRoles(groupId);
-      if (roles.length === 0) return;
-
-      let messageText = message.body;
-      const mentionedRoles: { name: string; members: { id: string; name: string; pushname: string }[] }[] = [];
-
-      // Check for role mentions
-      for (const role of roles) {
-        const roleMention = `@${role.name}`;
-        if (messageText.includes(roleMention)) {
-          const roleMembers = roleManager.getRoleMembers(groupId, role.name);
-          if (roleMembers.length > 0) {
-            mentionedRoles.push({ name: role.name, members: roleMembers });
-          }
-        }
-      }
-
-      if (mentionedRoles.length > 0) {
-        // Check for custom message pattern: @role message
-        let customPatternMatch: RegExpMatchArray | null = null;
-        if (mentionedRoles.length === 1) {
-          const role = mentionedRoles[0];
-          const regex = new RegExp(`^@${role.name}\\s+(.+)`, "i");
-          customPatternMatch = message.body.match(regex);
-        }
-
-        let formattedMessage = messageText;
-        const mentions: string[] = [];
-        const memberData: { id: string; name: string; mention: string }[] = [];
-
-        for (const role of mentionedRoles) {
-          formattedMessage = formattedMessage.replace(`@${role.name}`, `*[${role.name.toUpperCase()}]*`);
-          for (const member of role.members) {
-            try {
-              const contact = await client.getContactById(member.id);
-              const memberName = contact.name || contact.pushname || member.name || member.pushname || member.id;
-              memberData.push({
-                id: member.id,
-                name: memberName,
-                mention: `@${member.id.split("@")[0]}`,
-              });
-            } catch (err) {
-              debugLog(`Error getting contact for ${member.id}`, { error: err }, "error", "contact");
-              memberData.push({
-                id: member.id,
-                name: member.name || member.pushname || member.id,
-                mention: `@${member.id.split("@")[0]}`,
-              });
-            }
-          }
-        }
-
-        memberData.sort((a, b) => a.name.localeCompare(b.name));
-        mentions.push(...memberData.map((m) => m.id));
-        const mentionText = memberData.map((m) => m.mention).join(" ");
-
-        // If matches custom pattern, use that format
-        if (customPatternMatch) {
-          formattedMessage = `*[${mentionedRoles[0].name.toUpperCase()}]* ${customPatternMatch[1]}`;
-        }
-
-        await chat.sendMessage(formattedMessage + (mentionText ? "\n" + mentionText : ""), { mentions });
-      }
+      await handleRoleMention(message, client);
     } catch (error) {
       debugLog(
         "Error in role mention",
