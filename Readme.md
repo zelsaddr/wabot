@@ -37,8 +37,6 @@ sudo apt install ffmpeg
 # Download from https://www.google.com/chrome/ and install:
 wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
 sudo apt install ./google-chrome-stable_current_amd64.deb
-# Or for Chromium:
-sudo apt install chromium-browser
 ```
 
 - The bot is configured to use `/usr/bin/google-chrome` by default. If you use Chromium, change the path in `main.ts` to `/usr/bin/chromium-browser`.
