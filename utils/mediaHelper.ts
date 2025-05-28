@@ -18,9 +18,9 @@ if (!fs.existsSync(mediaFolder)) {
   fs.mkdirSync(mediaFolder, { recursive: true });
 }
 
-// Set FFmpeg path for Windows
-const ffmpegPath = "C:\\Users\\Izzel\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-7.1.1-full_build\\bin\\ffmpeg.exe";
-const ffprobePath = "C:\\Users\\Izzel\\AppData\\Local\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-7.1.1-full_build\\bin\\ffprobe.exe";
+// Set FFmpeg path for Linux
+const ffmpegPath = "/usr/bin/ffmpeg";
+const ffprobePath = "/usr/bin/ffprobe";
 
 ffmpeg.setFfmpegPath(ffmpegPath);
 ffmpeg.setFfprobePath(ffprobePath);
