@@ -8,6 +8,15 @@
 
 </div>
 
+## Features
+
+- **Group Mention**: Use `!everyone` to mention all group members with optional templates or custom messages (admin only).
+- **Role Management**: Create, delete, add, remove, and list custom roles in groups with commands like `!role create`, `!role delete`, `!role add`, `!role remove`, `!role list`, and `!role members` (admin only).
+- **Role Mention**: Mention all members of a custom role by typing `@roleName` in a group message.
+- **Sticker Creation**: Convert images, videos, or GIFs to WhatsApp stickers by sending `.sticker` with media or quoting a media message with `.sticker`.
+- **Media Processing**: Automatically processes and optimizes media for sticker creation, including video/GIF to animated sticker conversion.
+- **Cross-platform**: Works on both Linux and Windows (see setup instructions).
+
 ## Pre-requisites
 
 You must have one of this packages installed:
