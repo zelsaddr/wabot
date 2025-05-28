@@ -37,6 +37,8 @@ sudo apt install ffmpeg
 # Download from https://www.google.com/chrome/ and install:
 wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
 sudo apt install ./google-chrome-stable_current_amd64.deb
+# Or for Chromium:
+sudo apt install chromium-browser
 ```
 
 - The bot is configured to use `/usr/bin/google-chrome` by default. If you use Chromium, change the path in `main.ts` to `/usr/bin/chromium-browser`.
@@ -90,3 +92,12 @@ node main.js
 > # or
 > pm2 start main.js --interpreter node
 > ```
+
+## Features
+
+- **Sticker Creation**: Convert images, GIFs, and videos into stickers with `.sticker` command.
+- **Role Management**: Create, delete, add, remove, and list roles in groups with `!role` commands.
+- **Everyone Mention**: Mention all group members with `!everyone` command.
+- **Role Mention**: Mention members of a specific role with `@role` syntax.
+- **Media Processing**: Automatically processes media files for optimal sticker creation.
+- **Debug Logging**: Detailed logging for troubleshooting and monitoring.
